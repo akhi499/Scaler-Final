@@ -1,28 +1,30 @@
 ---
-<<<<<<< HEAD
-title: Zombie API
-emoji: 🦀
-colorFrom: gray
-colorTo: yellow
-sdk: gradio
-sdk_version: 6.13.0
-=======
 title: ZombieShieldEnv
 emoji: "🧟"
 colorFrom: blue
 colorTo: green
 sdk: gradio
->>>>>>> e7f48e1 (Deploy ZombieShieldEnv to HF Space)
 app_file: app.py
 pinned: false
 ---
 
-<<<<<<< HEAD
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
-=======
 # ZombieShieldEnv
 
 ZombieShieldEnv is an OpenEnv-compatible environment for training LLM agents to discover, classify, test, and mitigate zombie APIs (undocumented/stale/risky endpoints).
+
+## Submission Links (Judges)
+- Hugging Face Space: https://huggingface.co/spaces/akhi499/Zombie-API
+- Mini-blog (HF): TODO_ADD_LINK
+- <2 min demo video (YouTube): TODO_ADD_LINK
+- Slides (optional): TODO_ADD_LINK
+
+## 2-Minute Judge Story Flow
+1. Problem: zombie APIs remain reachable with stale auth/versions and hidden vulnerabilities.
+2. Environment: partially observable API ecosystem with step-wise actions (`scan`, `classify`, `test`, `block`, `ignore`, `escalate`).
+3. Reward design: multi-signal shaping with anti-gaming constraints.
+4. Training: TRL/GRPO path plus reproducible fallback training loop.
+5. Evidence: pre-train vs post-train metrics and baseline comparisons.
+6. Why this matters: reproducible RL environment for enterprise API governance behavior.
 
 ## Hackathon Theme Fit
 Primary fit: **Theme #3 - World Modeling / Professional Tasks**.
@@ -246,16 +248,34 @@ docker run --rm -p 8000:8000 zombieshield-env
 CLI deployment (recommended):
 ```bash
 pip install -U huggingface_hub
-huggingface-cli login
-huggingface-cli repo create <your-space-name> --type space --space_sdk gradio
-git remote add space https://huggingface.co/spaces/<hf-username>/<your-space-name>
-git push space HEAD:main
+hf auth login
+hf repo create <your-space-name> --repo-type space --space_sdk gradio
+# Avoid git binary restrictions by using API upload with excludes:
+hf upload <hf-username>/<your-space-name> . . --repo-type space \
+  --exclude "*.pdf" "*.png" "*.jpg" "*.jpeg" "*.gif" "**/__pycache__/**" "training_outputs*/**"
 ```
 
 After deploy, verify:
 - Space loads without dependency errors
 - Demo UI shows `Visible APIs`, `Recent Decisions`, and reward progression
 - `training_outputs/training_summary.json` is visible in the demo section
+
+### Train in Colab, then use trained policy in Space
+1. In Colab:
+```bash
+pip install -U pip
+pip install -r requirements-colab.txt
+python training/train_trl.py --episodes 120 --eval-episodes 20 --no-prefer-trl --output-dir training_outputs
+```
+2. Upload trained artifacts to your Space:
+```bash
+hf upload akhi499/Zombie-API training_outputs/policy_checkpoint.json training_outputs/policy_checkpoint.json --repo-type space
+hf upload akhi499/Zombie-API training_outputs/training_summary.json training_outputs/training_summary.json --repo-type space
+```
+3. In Space UI:
+   - Set `Agent Mode` to `trained_checkpoint`
+   - Keep checkpoint path as `training_outputs/policy_checkpoint.json`
+   - Reset + run episode to compare behavior vs `heuristic`
 
 ## Hackathon Submission Checklist
 - OpenEnv latest release used: `openenv-core==0.2.3`
@@ -271,14 +291,29 @@ After deploy, verify:
 - Minimum requirements:
   - OpenEnv latest: **met** (`openenv-core==0.2.3`)
   - Training script with TRL/Unsloth path: **met** (`training/train_trl.py`, `training/train_grpo_rlvr.py`)
-  - Hosted on Hugging Face Spaces: **pending until you push Space**
+  - Hosted on Hugging Face Spaces: **met** (https://huggingface.co/spaces/akhi499/Zombie-API)
   - Mini-blog / <2 min video / slides linked in README: **pending links**
 - Evidence artifacts present:
-  - `training_outputs/reward_curve.png`
-  - `training_outputs/accuracy_curve.png`
-  - `training_outputs/vulnerabilities_curve.png`
-  - `training_outputs/baseline_comparison.png`
   - `training_outputs/training_summary.json`
+  - `training_outputs/baseline_results.json`
+
+## Measured Improvement (Latest Run)
+From `training_outputs/training_summary.json` (30-episode smoke training):
+
+| Metric | Pretrain | Posttrain | Delta |
+|---|---:|---:|---:|
+| Mean reward | -212.05 | -186.00 | +26.05 |
+| Accuracy | 0.4058 | 0.4655 | +0.0596 |
+| Precision | 0.3342 | 0.4655 | +0.1313 |
+| Recall | 0.1959 | 0.2699 | +0.0740 |
+| F1 | 0.2430 | 0.3299 | +0.0869 |
+| Vulnerabilities (detected count) | 5.3 | 0.8 | -4.5 |
+
+Baseline reference from `training_outputs/baseline_results.json`:
+- Random baseline mean reward: `-218.20`
+- Heuristic baseline mean reward: `81.44`
+- Random baseline mean F1: `0.2992`
+- Heuristic baseline mean F1: `0.6521`
 
 ## Debugging
 - `ModuleNotFoundError: trl`: install dependencies or use `--no-prefer-trl`.
@@ -291,5 +326,3 @@ After deploy, verify:
 This environment simulates realistic API security operations under uncertainty and creates measurable RL feedback for LLM behavior improvement.
 
 It is useful for training agents that can perform dependable API governance work in enterprise settings.
-
->>>>>>> e7f48e1 (Deploy ZombieShieldEnv to HF Space)

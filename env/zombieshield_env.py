@@ -1,4 +1,4 @@
-﻿"""OpenEnv-style training environment for zombie API detection and mitigation."""
+"""OpenEnv-style training environment for zombie API detection and mitigation."""
 
 from __future__ import annotations
 
@@ -257,14 +257,16 @@ class ZombieShieldEnv(Environment):
 
     def _terminal_adjustments(self, info: Dict) -> float:
         zombie_ids = [api.api_id for api in self.simulator.apis if api.is_zombie]
+        accuracy = self._classification_accuracy()
+        metrics = self._classification_metrics()
         terminal_reward = self.reward_engine.terminal_reward(
             zombie_api_ids=zombie_ids,
             predicted_labels=self.predicted_labels,
             step_count=self.step_count,
             max_steps=self.max_steps or 1,
+            recall=metrics["recall"],
+            labeled_fraction=metrics["labeled_fraction"],
         )
-        accuracy = self._classification_accuracy()
-        metrics = self._classification_metrics()
         info["terminal_accuracy"] = accuracy
         info["terminal_precision"] = metrics["precision"]
         info["terminal_recall"] = metrics["recall"]
