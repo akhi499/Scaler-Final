@@ -1,0 +1,7 @@
+﻿openenv-core==0.2.3
+torch>=2.2.0
+transformers>=4.41.0,<4.50.0
+trl==0.8.6
+gradio>=4.0.0
+matplotlib
+pyyaml

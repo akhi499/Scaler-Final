@@ -1,0 +1,6 @@
+﻿__pycache__/
+*.pyc
+training_outputs/
+training_outputs_*/
+.venv/
+.git/
