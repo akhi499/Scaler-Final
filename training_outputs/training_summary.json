@@ -1,0 +1,57 @@
+{
+  "mode": "epsilon_q_fallback",
+  "trl_error": "cannot import name 'AutoModelForCausalLMWithValueHead' from 'trl' (C:\\Users\\Akhil Mahadik\\AppData\\Roaming\\Python\\Python313\\site-packages\\trl\\__init__.py)",
+  "episodes": 30,
+  "train_mean_reward": -156.485168997669,
+  "train_mean_accuracy": 0.4711633333333333,
+  "train_mean_vulnerabilities": 5.666666666666667,
+  "train_mean_precision": 0.48000000000000004,
+  "train_mean_recall": 0.14677,
+  "train_mean_f1": 0.20848333333333333,
+  "train_mean_labeled_fraction": 0.22334666666666667,
+  "baseline_random": {
+    "mean_reward": -214.95537062937063,
+    "mean_accuracy": 0.48118999999999995,
+    "mean_vulnerabilities": 7.3,
+    "mean_precision": 0.44245,
+    "mean_recall": 0.26198,
+    "mean_f1": 0.32253,
+    "mean_labeled_fraction": 0.61857
+  },
+  "baseline_heuristic": {
+    "mean_reward": 108.05,
+    "mean_accuracy": 0.93033,
+    "mean_vulnerabilities": 15.0,
+    "mean_precision": 0.8583299999999999,
+    "mean_recall": 0.55879,
+    "mean_f1": 0.6701699999999999,
+    "mean_labeled_fraction": 0.53025
+  },
+  "agent_pretrain": {
+    "mean_reward": -212.04934027777776,
+    "mean_accuracy": 0.40582,
+    "mean_vulnerabilities": 5.3,
+    "mean_precision": 0.33415999999999996,
+    "mean_recall": 0.19585,
+    "mean_f1": 0.24304,
+    "mean_labeled_fraction": 0.55341
+  },
+  "agent_posttrain": {
+    "mean_reward": -186.0,
+    "mean_accuracy": 0.46547,
+    "mean_vulnerabilities": 0.8,
+    "mean_precision": 0.46547,
+    "mean_recall": 0.26985000000000003,
+    "mean_f1": 0.32994,
+    "mean_labeled_fraction": 0.22446000000000002
+  },
+  "improvement": {
+    "reward_delta": 26.04934027777776,
+    "accuracy_delta": 0.05964999999999998,
+    "precision_delta": 0.13131000000000004,
+    "recall_delta": 0.07400000000000004,
+    "f1_delta": 0.0869,
+    "vulnerability_delta": -4.5,
+    "labeled_fraction_delta": -0.32894999999999996
+  }
+}
