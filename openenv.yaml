@@ -1,0 +1,22 @@
+﻿name: ZombieShieldEnv
+version: 0.1.0
+description: OpenEnv-compatible environment for zombie API discovery and mitigation with partial observability.
+entrypoint: env.zombieshield_env:ZombieShieldEnv
+framework: gym-style
+observation:
+  type: json
+  partial_observability: true
+action:
+  type: structured
+  supported:
+    - scan_api(api_id)
+    - classify_api(api_id,label)
+    - run_security_test(api_id)
+    - block_api(api_id)
+    - ignore_api(api_id)
+    - escalate_api(api_id)
+episode:
+  apis_per_episode: [10, 50]
+  termination:
+    - max_steps
+    - all_apis_processed
