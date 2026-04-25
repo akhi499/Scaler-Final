@@ -79,6 +79,7 @@ class RewardEngine:
         step_count: int,
         max_steps: int,
         recall: float = 0.0,
+        f1: float = 0.0,
         labeled_fraction: float = 0.0,
     ) -> float:
         reward = 0.0
@@ -90,13 +91,23 @@ class RewardEngine:
         efficiency = max(0.0, (max_steps - step_count) / max_steps)
         reward += efficiency * 3.0
 
-        # Anti-gaming: discourage policies that avoid labeling/classification actions.
-        if labeled_fraction < 0.30:
-            reward -= (0.30 - labeled_fraction) * 30.0
+        # Encourage healthy action coverage: too little labeling indicates policy collapse.
+        if labeled_fraction < 0.40:
+            reward -= (0.40 - labeled_fraction) * 80.0
+        else:
+            reward += min(4.0, (labeled_fraction - 0.40) * 10.0)
 
-        # Anti-gaming: discourage collapsing recall by over-conservative behavior.
-        if recall < 0.20:
-            reward -= (0.20 - recall) * 25.0
+        # Penalize under-detection and reward meaningful recall.
+        if recall < 0.30:
+            reward -= (0.30 - recall) * 70.0
+        else:
+            reward += min(5.0, (recall - 0.30) * 12.0)
+
+        # Keep F1 in the objective so precision-only behavior doesn't dominate.
+        if f1 < 0.25:
+            reward -= (0.25 - f1) * 35.0
+        else:
+            reward += min(3.0, (f1 - 0.25) * 10.0)
 
         # Penalize random/excessive interaction patterns.
         reward -= min(5.0, self.tracker.excessive_action_count * 0.2)

@@ -265,6 +265,7 @@ class ZombieShieldEnv(Environment):
             step_count=self.step_count,
             max_steps=self.max_steps or 1,
             recall=metrics["recall"],
+            f1=metrics["f1"],
             labeled_fraction=metrics["labeled_fraction"],
         )
         info["terminal_accuracy"] = accuracy
