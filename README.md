@@ -260,6 +260,23 @@ After deploy, verify:
 - Demo UI shows `Visible APIs`, `Recent Decisions`, and reward progression
 - `training_outputs/training_summary.json` is visible in the demo section
 
+### Train in Colab, then use trained policy in Space
+1. In Colab:
+```bash
+pip install -U pip
+pip install -r requirements-colab.txt
+python training/train_trl.py --episodes 120 --eval-episodes 20 --no-prefer-trl --output-dir training_outputs
+```
+2. Upload trained artifacts to your Space:
+```bash
+hf upload akhi499/Zombie-API training_outputs/policy_checkpoint.json training_outputs/policy_checkpoint.json --repo-type space
+hf upload akhi499/Zombie-API training_outputs/training_summary.json training_outputs/training_summary.json --repo-type space
+```
+3. In Space UI:
+   - Set `Agent Mode` to `trained_checkpoint`
+   - Keep checkpoint path as `training_outputs/policy_checkpoint.json`
+   - Reset + run episode to compare behavior vs `heuristic`
+
 ## Hackathon Submission Checklist
 - OpenEnv latest release used: `openenv-core==0.2.3`
 - OpenEnv/Gym-style methods: `reset`, `step`, `state`
