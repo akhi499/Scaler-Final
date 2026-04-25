@@ -18,6 +18,15 @@ ZombieShieldEnv is an OpenEnv-compatible environment for training LLM agents to 
 - <2 min demo video (YouTube): TODO_ADD_LINK
 - Slides (optional): TODO_ADD_LINK
 
+## Direct Evidence Links (UI-Independent)
+If the Space UI cache is stale, use these direct artifact links in the Files tab:
+- Training summary JSON: https://huggingface.co/spaces/akhi499/Zombie-API/blob/main/training_outputs/training_summary.json
+- Baseline results JSON: https://huggingface.co/spaces/akhi499/Zombie-API/blob/main/training_outputs/baseline_results.json
+- Policy checkpoint JSON: https://huggingface.co/spaces/akhi499/Zombie-API/blob/main/training_outputs/policy_checkpoint.json
+
+Judge fallback note:
+- If the `Latest Training Summary` widget says no file found, the above links are the source of truth for evaluation.
+
 ## 2-Minute Judge Story Flow
 1. Problem: zombie APIs remain reachable with stale auth/versions and hidden vulnerabilities.
 2. Environment: partially observable API ecosystem with step-wise actions (`scan`, `classify`, `test`, `block`, `ignore`, `escalate`).
