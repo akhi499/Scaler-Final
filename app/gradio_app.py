@@ -1,4 +1,4 @@
-﻿"""Gradio demo for ZombieShieldEnv."""
+"""Gradio demo for ZombieShieldEnv."""
 
 from __future__ import annotations
 
@@ -27,6 +27,118 @@ class DemoState:
     total_reward: float
     decisions: List[Dict]
     reward_trace: List[float]
+
+
+def candidate_actions(observation: Dict) -> List[str]:
+    actions: List[str] = []
+    apis = observation.get("apis", [])
+    candidates = [api for api in apis if not api.get("processed", False)]
+    if not candidates:
+        candidates = apis
+
+    for api in candidates:
+        api_id = api["api_id"]
+        actions.extend(
+            [
+                f"scan_api({api_id})",
+                f"run_security_test({api_id})",
+                f"classify_api({api_id},ZOMBIE)",
+                f"classify_api({api_id},ACTIVE)",
+                f"block_api({api_id})",
+                f"ignore_api({api_id})",
+                f"escalate_api({api_id})",
+            ]
+        )
+    return actions[:120]
+
+
+class EpsilonGreedyCheckpointPolicy:
+    """Inference-only policy loader for fallback checkpoint JSON."""
+
+    def __init__(self, q_table: Dict[Tuple[str, str, int], float], seed: int = 42):
+        self.q = q_table
+        self.rng = random.Random(seed)
+
+    @staticmethod
+    def _parse_action(action: str) -> Tuple[str, str]:
+        action_type = action.split("(", 1)[0]
+        api_id = action[action.find("(") + 1 : action.rfind(")")].split(",", 1)[0]
+        return action_type, api_id
+
+    @staticmethod
+    def _state_bucket(obs: Dict) -> str:
+        remain = int(obs.get("steps_remaining", 0))
+        if remain > 20:
+            return "early"
+        if remain > 8:
+            return "mid"
+        return "late"
+
+    @staticmethod
+    def _risk_bucket(api: Dict) -> int:
+        score = 0
+        if api.get("authentication_type") == "none":
+            score += 2
+        if str(api.get("version", "")).lower() in {"legacy", "v1"}:
+            score += 1
+        if str(api.get("last_updated", "unknown")) != "unknown" and str(api.get("last_updated")) < "2024-01-01":
+            score += 1
+        if api.get("security_test", {}).get("detected_vulnerabilities"):
+            score += 2
+        if not api.get("observed", False):
+            score -= 1
+        if api.get("processed", False):
+            score -= 2
+
+        if score <= 0:
+            return 0
+        if score <= 2:
+            return 1
+        return 2
+
+    def _action_key(self, obs: Dict, action: str) -> Tuple[str, str, int]:
+        state_bucket = self._state_bucket(obs)
+        action_type, api_id = self._parse_action(action)
+        api_lookup = {api["api_id"]: api for api in obs.get("apis", [])}
+        risk_bucket = self._risk_bucket(api_lookup.get(api_id, {}))
+        return (state_bucket, action_type, risk_bucket)
+
+    def act(self, obs: Dict, actions: List[str]) -> str:
+        if not actions:
+            return "scan_api(api_0)"
+
+        # Keep exploration behavior from training script: scan unknowns first.
+        for api in obs.get("apis", []):
+            if not api.get("observed", False) and not api.get("processed", False):
+                candidate = f"scan_api({api['api_id']})"
+                if candidate in actions:
+                    return candidate
+
+        best_action = None
+        best_q = float("-inf")
+        for action in actions:
+            key = self._action_key(obs, action)
+            q = self.q.get(key, 0.0)
+            if q > best_q:
+                best_q = q
+                best_action = action
+        return best_action or self.rng.choice(actions)
+
+    @classmethod
+    def from_checkpoint(cls, checkpoint_path: str, seed: int = 42) -> "EpsilonGreedyCheckpointPolicy":
+        payload = json.loads(Path(checkpoint_path).read_text(encoding="utf-8"))
+        q_payload = payload.get("q", {})
+        restored_q: Dict[Tuple[str, str, int], float] = {}
+        for raw_key, value in q_payload.items():
+            parts = str(raw_key).split("|")
+            if len(parts) != 3:
+                continue
+            state_bucket, action_type, risk_bucket = parts[0], parts[1], parts[2]
+            try:
+                restored_q[(state_bucket, action_type, int(risk_bucket))] = float(value)
+            except Exception:
+                continue
+        return cls(q_table=restored_q, seed=seed)
 
 
 class HeuristicAgent:
@@ -78,6 +190,21 @@ def init_demo(seed: int = 42) -> DemoState:
     return DemoState(env=env, observation=obs, done=False, total_reward=0.0, decisions=[], reward_trace=[])
 
 
+def _choose_action(obs: Dict, agent_mode: str, checkpoint_path: str, step_idx: int) -> Tuple[str, str]:
+    if agent_mode == "trained_checkpoint":
+        ckpt = Path(checkpoint_path)
+        if ckpt.exists():
+            policy = EpsilonGreedyCheckpointPolicy.from_checkpoint(str(ckpt), seed=42)
+            actions = candidate_actions(obs)
+            return policy.act(obs, actions), "trained_checkpoint"
+        # Fallback gracefully if checkpoint is missing.
+        heuristic = HeuristicAgent(seed=42 + step_idx)
+        return heuristic.choose_action(obs), "heuristic_fallback_no_checkpoint"
+
+    heuristic = HeuristicAgent(seed=42 + step_idx)
+    return heuristic.choose_action(obs), "heuristic"
+
+
 def _table_from_observation(obs: Dict) -> List[List]:
     rows: List[List] = []
     for api in obs.get("apis", []):
@@ -107,21 +234,26 @@ def _reward_plot(reward_trace: List[float]):
     return fig
 
 
-def reset_env(seed: int) -> Tuple[DemoState, List[List], str, str, object]:
+def reset_env(seed: int, agent_mode: str, checkpoint_path: str) -> Tuple[DemoState, List[List], str, str, object]:
     state = init_demo(seed=seed)
     table = _table_from_observation(state.observation)
-    status = f"Episode started. visible_apis={state.observation['visible_api_count']}"
+    checkpoint_note = ""
+    if agent_mode == "trained_checkpoint" and not Path(checkpoint_path).exists():
+        checkpoint_note = " (checkpoint missing, will fallback to heuristic)"
+    status = (
+        f"Episode started. visible_apis={state.observation['visible_api_count']} "
+        f"agent_mode={agent_mode}{checkpoint_note}"
+    )
     decisions = "No decisions yet."
     return state, table, status, decisions, _reward_plot(state.reward_trace)
 
 
-def step_once(state: DemoState):
+def step_once(state: DemoState, agent_mode: str, checkpoint_path: str):
     if state.done:
         table = _table_from_observation(state.observation)
         return state, table, "Episode already finished. Click Reset.", _decisions_text(state.decisions), _reward_plot(state.reward_trace)
 
-    agent = HeuristicAgent(seed=42 + len(state.decisions))
-    action = agent.choose_action(state.observation)
+    action, resolved_mode = _choose_action(state.observation, agent_mode, checkpoint_path, len(state.decisions))
     next_obs, reward, done, info = state.env.step(action)
 
     state.observation = next_obs
@@ -133,25 +265,26 @@ def step_once(state: DemoState):
     table = _table_from_observation(state.observation)
     status = (
         f"step={info.get('step')} reward={reward:.2f} total_reward={state.total_reward:.2f} "
-        f"done={done} accuracy={info.get('terminal_accuracy', 'n/a')}"
+        f"done={done} accuracy={info.get('terminal_accuracy', 'n/a')} agent_mode={resolved_mode}"
     )
     decisions = _decisions_text(state.decisions)
 
     return state, table, status, decisions, _reward_plot(state.reward_trace)
 
 
-def autoplay(state: DemoState, max_steps: int):
+def autoplay(state: DemoState, max_steps: int, agent_mode: str, checkpoint_path: str):
     for _ in range(max_steps):
         if state.done:
             break
-        state, _, _, _, _ = step_once(state)
+        state, _, _, _, _ = step_once(state, agent_mode, checkpoint_path)
 
     table = _table_from_observation(state.observation)
     final_info = state.decisions[-1]["info"] if state.decisions else {}
     status = (
         f"Autoplay done. steps={len(state.decisions)} total_reward={state.total_reward:.2f} "
         f"terminal_accuracy={final_info.get('terminal_accuracy', 'n/a')} "
-        f"vulnerabilities={final_info.get('terminal_vulnerabilities_detected', 'n/a')}"
+        f"vulnerabilities={final_info.get('terminal_vulnerabilities_detected', 'n/a')} "
+        f"agent_mode={agent_mode}"
     )
     return state, table, status, _decisions_text(state.decisions), _reward_plot(state.reward_trace)
 
@@ -185,13 +318,24 @@ def build_app() -> gr.Blocks:
         gr.Markdown(
             "# ZombieShieldEnv\n"
             "Interactive demo for zombie API discovery, classification, and mitigation.\n\n"
-            "Use this UI to show what the agent observes, what action it takes each step, and how reward evolves."
+            "Use this UI to show what the agent observes, what action it takes each step, and how reward evolves.\n\n"
+            "**Tip:** choose `trained_checkpoint` and point to `training_outputs/policy_checkpoint.json` "
+            "after training to demo learned behavior in Space."
         )
 
         state = gr.State(init_demo())
 
         with gr.Row():
             seed = gr.Number(value=42, label="Seed", precision=0)
+            agent_mode = gr.Dropdown(
+                choices=["heuristic", "trained_checkpoint"],
+                value="heuristic",
+                label="Agent Mode",
+            )
+            checkpoint_path = gr.Textbox(
+                value="training_outputs/policy_checkpoint.json",
+                label="Checkpoint path",
+            )
             reset_btn = gr.Button("Reset Episode")
             step_btn = gr.Button("Step Once")
             auto_btn = gr.Button("Auto Play")
@@ -209,9 +353,21 @@ def build_app() -> gr.Blocks:
         summary = gr.Code(label="Latest Training Summary", language="json", value=training_summary_text())
         comparison_img = gr.Image(label="Baseline vs Trained Comparison", value=comparison_plot_path())
 
-        reset_btn.click(reset_env, inputs=[seed], outputs=[state, api_table, status, decisions, reward_plot])
-        step_btn.click(step_once, inputs=[state], outputs=[state, api_table, status, decisions, reward_plot])
-        auto_btn.click(autoplay, inputs=[state, auto_steps], outputs=[state, api_table, status, decisions, reward_plot])
+        reset_btn.click(
+            reset_env,
+            inputs=[seed, agent_mode, checkpoint_path],
+            outputs=[state, api_table, status, decisions, reward_plot],
+        )
+        step_btn.click(
+            step_once,
+            inputs=[state, agent_mode, checkpoint_path],
+            outputs=[state, api_table, status, decisions, reward_plot],
+        )
+        auto_btn.click(
+            autoplay,
+            inputs=[state, auto_steps, agent_mode, checkpoint_path],
+            outputs=[state, api_table, status, decisions, reward_plot],
+        )
 
     return demo
 
