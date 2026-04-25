@@ -1,4 +1,4 @@
-﻿"""RL training script for ZombieShieldEnv.
+"""RL training script for ZombieShieldEnv.
 
 Preferred path: HuggingFace TRL PPO.
 Fallback path: lightweight epsilon-greedy Q-learning for guaranteed local/Colab runs.
@@ -411,6 +411,17 @@ def evaluate_policy(policy, episodes: int, env_kwargs: Dict, seed_base: int, det
     }
 
 
+def selection_score(stats: Dict[str, float]) -> float:
+    """Checkpoint ranking score that balances reward with task-quality metrics."""
+    return (
+        stats["mean_reward"]
+        + 35.0 * stats["mean_f1"]
+        + 25.0 * stats["mean_recall"]
+        + 12.0 * stats["mean_labeled_fraction"]
+        + 6.0 * stats["mean_accuracy"]
+    )
+
+
 def train(args: argparse.Namespace) -> Dict:
     set_global_seed(args.seed)
 
@@ -439,7 +450,7 @@ def train(args: argparse.Namespace) -> Dict:
 
     best_snapshot_q = copy.deepcopy(fallback_policy.q)
     best_snapshot_eps = fallback_policy.epsilon
-    best_snapshot_score = pretrain_eval["mean_reward"] + 40.0 * pretrain_eval["mean_accuracy"]
+    best_snapshot_score = selection_score(pretrain_eval)
 
     rewards: List[float] = []
     accuracies: List[float] = []
@@ -482,9 +493,9 @@ def train(args: argparse.Namespace) -> Dict:
                     env_kwargs=env_kwargs,
                     seed_base=args.seed + 2000 + episode,
                 )
-                selection_score = selection_eval["mean_reward"] + 40.0 * selection_eval["mean_accuracy"]
-                if selection_score > best_snapshot_score:
-                    best_snapshot_score = selection_score
+                candidate_score = selection_score(selection_eval)
+                if candidate_score > best_snapshot_score:
+                    best_snapshot_score = candidate_score
                     best_snapshot_q = copy.deepcopy(fallback_policy.q)
                     best_snapshot_eps = fallback_policy.epsilon
 
@@ -526,6 +537,8 @@ def train(args: argparse.Namespace) -> Dict:
         "baseline_heuristic": baseline_heuristic,
         "agent_pretrain": pretrain_eval,
         "agent_posttrain": posttrain_eval,
+        "selection_score_pretrain": selection_score(pretrain_eval),
+        "selection_score_posttrain": selection_score(posttrain_eval),
         "improvement": {
             "reward_delta": posttrain_eval["mean_reward"] - pretrain_eval["mean_reward"],
             "accuracy_delta": posttrain_eval["mean_accuracy"] - pretrain_eval["mean_accuracy"],
