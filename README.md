@@ -31,7 +31,7 @@ Judge fallback note:
 1. Problem: zombie APIs remain reachable with stale auth/versions and hidden vulnerabilities.
 2. Environment: partially observable API ecosystem with step-wise actions (`scan`, `classify`, `test`, `block`, `ignore`, `escalate`).
 3. Reward design: multi-signal shaping with anti-gaming constraints.
-4. Training: TRL/GRPO path plus reproducible fallback training loop.
+4. Training: TRL PPO (`training/train_trl.py`); older Q-table fallback lives on branch `backup/pre-trl-fix`.
 5. Evidence: pre-train vs post-train metrics and baseline comparisons.
 6. Why this matters: reproducible RL environment for enterprise API governance behavior.
 
@@ -307,15 +307,16 @@ hf upload akhi499/Zombie-API training_outputs/training_summary.json training_out
   - `training_outputs/baseline_results.json`
 
 ## Measured Improvement (Latest Run)
-From `training_outputs/training_summary.json` (Qwen 3B fallback run):
+From `training_outputs/training_summary.json` (last uploaded Space run; re-run training after PPO-only script push to refresh):
 
 | Metric | Pretrain | Posttrain | Delta |
 |---|---:|---:|---:|
-| Mean reward | -211.95 | -178.11 | +33.84 |
-| Recall | 0.2446 | 0.3821 | +0.1375 |
-| F1 | 0.2601 | 0.4267 | +0.1666 |
-| Labeled fraction | 0.5600 | 0.2753 | -0.2847 |
-| Selection score | -201.50 | -161.11 | +40.38 |
+| Mean reward | -212.05 | -186.00 | +26.05 |
+| Accuracy | 0.4058 | 0.4655 | +0.0596 |
+| Precision | 0.3342 | 0.4655 | +0.1313 |
+| Recall | 0.1959 | 0.2699 | +0.0740 |
+| F1 | 0.2430 | 0.3299 | +0.0869 |
+| Vulnerabilities (detected count) | 5.3 | 0.8 | -4.5 |
 
 Baseline reference from `training_outputs/baseline_results.json`:
 - Random baseline mean reward: `-218.20`
@@ -324,11 +325,10 @@ Baseline reference from `training_outputs/baseline_results.json`:
 - Heuristic baseline mean F1: `0.6521`
 
 ## Submission Status
-Current recommendation: **Ready to submit**.
+Current recommendation: **Ready to submit** after you re-run training on the PPO-only script and refresh `training_outputs/*` if needed.
 
 Reasons:
 - Core minimum criteria are met (OpenEnv usage, training pipeline, Space-hosted runnable demo).
-- Latest run shows positive deltas on reward, recall, and F1.
 - Direct artifact links are available in README if the UI widget cache is stale.
 
 Final pre-submit checks:
@@ -337,11 +337,11 @@ Final pre-submit checks:
 3. Confirm `training_outputs/training_summary.json` opens from the direct link.
 
 ## Debugging
-- `ModuleNotFoundError: trl`: install dependencies or use `--no-prefer-trl`.
+- `ModuleNotFoundError: trl` / import errors: install `pip install "trl>=0.7.10,<0.9.0"` (see `requirements.txt`). Training no longer supports `--no-prefer-trl`.
 - `ModuleNotFoundError: gradio`: run `pip install -r requirements.txt` (or `requirements-colab.txt` in Colab).
 - Flat/noisy curves: increase episodes (`120+`) and keep seed fixed.
 - Weak improvement vs baseline: increase eval episodes and check reward penalties for over-blocking.
-- `GRPOTrainer unavailable`: use `requirements-colab.txt` or fallback training via `train_trl.py`.
+- `GRPOTrainer unavailable`: use `requirements-colab.txt` or `training/train_trl.py` (TRL PPO). For historical Q-table training use branch `backup/pre-trl-fix`.
 
 ## Why It Matters
 This environment simulates realistic API security operations under uncertainty and creates measurable RL feedback for LLM behavior improvement.

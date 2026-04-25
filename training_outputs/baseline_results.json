@@ -1,20 +1,20 @@
 {
   "random": {
-    "mean_reward": -218.20438916986313,
-    "mean_accuracy": 0.47966999999999993,
-    "mean_vulnerabilities": 5.1,
-    "mean_precision": 0.399165,
-    "mean_recall": 0.24864999999999998,
-    "mean_f1": 0.299185,
-    "mean_labeled_fraction": 0.557995
+    "mean_reward": -215.83811018533558,
+    "mean_accuracy": 0.43953000000000003,
+    "mean_vulnerabilities": 5.766666666666667,
+    "mean_precision": 0.3633733333333333,
+    "mean_recall": 0.22322,
+    "mean_f1": 0.26955333333333337,
+    "mean_labeled_fraction": 0.52039
   },
   "heuristic": {
-    "mean_reward": 81.44375,
-    "mean_accuracy": 0.87941,
-    "mean_vulnerabilities": 15.4,
-    "mean_precision": 0.8138249999999999,
-    "mean_recall": 0.585055,
-    "mean_f1": 0.6520699999999999,
-    "mean_labeled_fraction": 0.51189
+    "mean_reward": 94.41483333333333,
+    "mean_accuracy": 0.9000033333333334,
+    "mean_vulnerabilities": 14.366666666666667,
+    "mean_precision": 0.85644,
+    "mean_recall": 0.60363,
+    "mean_f1": 0.6868766666666667,
+    "mean_labeled_fraction": 0.5154766666666667
   }
 }
