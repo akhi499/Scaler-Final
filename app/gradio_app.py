@@ -300,17 +300,34 @@ def _decisions_text(decisions: List[Dict]) -> str:
 
 
 def training_summary_text() -> str:
-    summary_path = Path("training_outputs/training_summary.json")
-    if not summary_path.exists():
+    candidates = []
+    preferred = Path("training_outputs/training_summary.json")
+    if preferred.exists():
+        candidates.append(preferred)
+
+    candidates.extend(sorted(Path(".").glob("training_outputs*/training_summary.json"), key=lambda p: p.stat().st_mtime, reverse=True))
+    if not candidates:
         return "No training summary found yet. Run training/train_trl.py first."
 
+    summary_path = candidates[0]
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
-    return json.dumps(payload, indent=2)
+    rendered = json.dumps(payload, indent=2)
+    if summary_path != preferred:
+        rendered = f"// Loaded from: {summary_path.as_posix()}\n{rendered}"
+    return rendered
 
 
 def comparison_plot_path() -> str | None:
-    path = Path("training_outputs/baseline_comparison.png")
-    return str(path) if path.exists() else None
+    preferred = Path("training_outputs/baseline_comparison.png")
+    if preferred.exists():
+        return str(preferred)
+
+    candidates = sorted(Path(".").glob("training_outputs*/baseline_comparison.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return str(candidates[0]) if candidates else None
+
+
+def reload_artifacts() -> Tuple[str, str | None]:
+    return training_summary_text(), comparison_plot_path()
 
 
 def build_app() -> gr.Blocks:
@@ -336,6 +353,7 @@ def build_app() -> gr.Blocks:
                 value="training_outputs/policy_checkpoint.json",
                 label="Checkpoint path",
             )
+            refresh_btn = gr.Button("Reload Artifacts")
             reset_btn = gr.Button("Reset Episode")
             step_btn = gr.Button("Step Once")
             auto_btn = gr.Button("Auto Play")
@@ -367,6 +385,11 @@ def build_app() -> gr.Blocks:
             autoplay,
             inputs=[state, auto_steps, agent_mode, checkpoint_path],
             outputs=[state, api_table, status, decisions, reward_plot],
+        )
+        refresh_btn.click(
+            reload_artifacts,
+            inputs=[],
+            outputs=[summary, comparison_img],
         )
 
     return demo
