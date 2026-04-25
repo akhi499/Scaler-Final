@@ -307,22 +307,34 @@ hf upload akhi499/Zombie-API training_outputs/training_summary.json training_out
   - `training_outputs/baseline_results.json`
 
 ## Measured Improvement (Latest Run)
-From `training_outputs/training_summary.json` (30-episode smoke training):
+From `training_outputs/training_summary.json` (Qwen 3B fallback run):
 
 | Metric | Pretrain | Posttrain | Delta |
 |---|---:|---:|---:|
-| Mean reward | -212.05 | -186.00 | +26.05 |
-| Accuracy | 0.4058 | 0.4655 | +0.0596 |
-| Precision | 0.3342 | 0.4655 | +0.1313 |
-| Recall | 0.1959 | 0.2699 | +0.0740 |
-| F1 | 0.2430 | 0.3299 | +0.0869 |
-| Vulnerabilities (detected count) | 5.3 | 0.8 | -4.5 |
+| Mean reward | -211.95 | -178.11 | +33.84 |
+| Recall | 0.2446 | 0.3821 | +0.1375 |
+| F1 | 0.2601 | 0.4267 | +0.1666 |
+| Labeled fraction | 0.5600 | 0.2753 | -0.2847 |
+| Selection score | -201.50 | -161.11 | +40.38 |
 
 Baseline reference from `training_outputs/baseline_results.json`:
 - Random baseline mean reward: `-218.20`
 - Heuristic baseline mean reward: `81.44`
 - Random baseline mean F1: `0.2992`
 - Heuristic baseline mean F1: `0.6521`
+
+## Submission Status
+Current recommendation: **Ready to submit**.
+
+Reasons:
+- Core minimum criteria are met (OpenEnv usage, training pipeline, Space-hosted runnable demo).
+- Latest run shows positive deltas on reward, recall, and F1.
+- Direct artifact links are available in README if the UI widget cache is stale.
+
+Final pre-submit checks:
+1. Replace all `TODO_ADD_LINK` placeholders with your final public links (video/blog/slides).
+2. Verify once in Space: `Agent Mode = trained_checkpoint`, run one full episode.
+3. Confirm `training_outputs/training_summary.json` opens from the direct link.
 
 ## Debugging
 - `ModuleNotFoundError: trl`: install dependencies or use `--no-prefer-trl`.
