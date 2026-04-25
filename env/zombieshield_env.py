@@ -1,4 +1,4 @@
-﻿"""OpenEnv-style training environment for zombie API detection and mitigation."""
+"""OpenEnv-style training environment for zombie API detection and mitigation."""
 
 from __future__ import annotations
 
@@ -262,6 +262,8 @@ class ZombieShieldEnv(Environment):
             predicted_labels=self.predicted_labels,
             step_count=self.step_count,
             max_steps=self.max_steps or 1,
+            recall=metrics["recall"],
+            labeled_fraction=metrics["labeled_fraction"],
         )
         accuracy = self._classification_accuracy()
         metrics = self._classification_metrics()
