@@ -1,4 +1,4 @@
-﻿"""Reward shaping and anti-gaming logic for ZombieShieldEnv."""
+"""Reward shaping and anti-gaming logic for ZombieShieldEnv."""
 
 from __future__ import annotations
 
@@ -78,6 +78,8 @@ class RewardEngine:
         predicted_labels: Dict[str, str],
         step_count: int,
         max_steps: int,
+        recall: float = 0.0,
+        labeled_fraction: float = 0.0,
     ) -> float:
         reward = 0.0
 
@@ -87,6 +89,14 @@ class RewardEngine:
 
         efficiency = max(0.0, (max_steps - step_count) / max_steps)
         reward += efficiency * 3.0
+
+        # Anti-gaming: discourage policies that avoid labeling/classification actions.
+        if labeled_fraction < 0.30:
+            reward -= (0.30 - labeled_fraction) * 30.0
+
+        # Anti-gaming: discourage collapsing recall by over-conservative behavior.
+        if recall < 0.20:
+            reward -= (0.20 - recall) * 25.0
 
         # Penalize random/excessive interaction patterns.
         reward -= min(5.0, self.tracker.excessive_action_count * 0.2)
