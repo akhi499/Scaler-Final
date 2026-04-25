@@ -1,7 +1,7 @@
 """RL training script for ZombieShieldEnv.
 
-Preferred path: HuggingFace TRL PPO.
-Fallback path: lightweight epsilon-greedy Q-learning for guaranteed local/Colab runs.
+# MODIFIED: HuggingFace TRL PPO (RLHF-style) is the only training path.
+# REMOVED: epsilon_q_fallback — recover from git branch `backup/pre-trl-fix` if needed.
 Also produces baseline-vs-trained comparisons required by hackathon judging.
 """
 
@@ -13,8 +13,8 @@ os.environ["USE_TF"] = "0"
 
 import argparse
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version as pkg_version
 from pathlib import Path
-import copy
 import json
 import random
 import sys
@@ -97,6 +97,39 @@ def build_prompt(observation: Dict, actions: List[str]) -> str:
     )
 
 
+def _import_legacy_trl_ppo():
+    """# ADDED: Resolve TRL 0.7–0.8.x symbols for PPOTrainer.step (RLHF loop). TRL 0.9+ moved/removes this API."""
+    try:
+        from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer
+
+        return AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer
+    except ImportError as primary:
+        try:
+            from trl import AutoModelForCausalLMWithValueHead, PPOConfig
+            from trl.trainer.ppo_trainer import PPOTrainer
+
+            return AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer
+        except ImportError:
+            raise SystemExit(
+                "FATAL: TRL legacy PPO is required (AutoModelForCausalLMWithValueHead + PPOTrainer.step).\n"
+                "TRL 0.9+ no longer exposes this at `from trl import ...`. Install a compatible build, e.g.:\n"
+                "  pip install \"trl>=0.7.10,<0.9.0\"\n"
+                "Colab: use requirements-colab.txt (trl==0.8.6).\n"
+                f"Original error: {primary}"
+            ) from primary
+
+
+def _shape_ppo_reward(step_reward: float, done: bool, info: Dict) -> float:
+    """# ADDED: Extra PPO reward shaping to improve recall (missed zombies / bad mitigation order)."""
+    shaped = float(step_reward)
+    missed_vulnerability = bool(info.get("classification_first_missing")) or (
+        done and int(info.get("terminal_fn", 0) or 0) > 0
+    )
+    if missed_vulnerability:
+        shaped -= 2.0  # ADDED
+    return shaped
+
+
 @dataclass
 class EpisodeResult:
     reward: float
@@ -172,212 +205,104 @@ class HeuristicPolicy:
         return score
 
 
-class EpsilonGreedyPolicy:
-    """Structured Q-learning fallback that generalizes across APIs."""
-
-    def __init__(self, seed: int = 42):
-        self.rng = random.Random(seed)
-        self.q: Dict[Tuple[str, str, int], float] = {}
-        self.epsilon = 0.28
-        self.alpha = 0.12
-        self.gamma = 0.95
-
-    def _state_bucket(self, obs: Dict) -> str:
-        remain = int(obs.get("steps_remaining", 0))
-        if remain > 20:
-            return "early"
-        if remain > 8:
-            return "mid"
-        return "late"
-
-    @staticmethod
-    def _parse_action(action: str) -> Tuple[str, str]:
-        action_type = action.split("(", 1)[0]
-        api_id = action[action.find("(") + 1 : action.rfind(")")].split(",", 1)[0]
-        return action_type, api_id
-
-    @staticmethod
-    def _risk_bucket(api: Dict) -> int:
-        score = 0
-        if api.get("authentication_type") == "none":
-            score += 2
-        if str(api.get("version", "")).lower() in {"legacy", "v1"}:
-            score += 1
-        if str(api.get("last_updated", "unknown")) != "unknown" and str(api.get("last_updated")) < "2024-01-01":
-            score += 1
-        if api.get("security_test", {}).get("detected_vulnerabilities"):
-            score += 2
-        if not api.get("observed", False):
-            score -= 1
-        if api.get("processed", False):
-            score -= 2
-        if score <= 0:
-            return 0
-        if score <= 2:
-            return 1
-        return 2
-
-    def _action_key(self, obs: Dict, action: str) -> Tuple[str, str, int]:
-        state_bucket = self._state_bucket(obs)
-        action_type, api_id = self._parse_action(action)
-        api_lookup = {api["api_id"]: api for api in obs.get("apis", [])}
-        risk_bucket = self._risk_bucket(api_lookup.get(api_id, {}))
-        return (state_bucket, action_type, risk_bucket)
-
-    def act(self, obs: Dict, actions: List[str], deterministic: bool = False) -> str:
-        eps = 0.0 if deterministic else self.epsilon
-        if self.rng.random() < eps:
-            return self.rng.choice(actions)
-
-        # Prefer unknown API scans before learning kicks in.
-        for api in obs.get("apis", []):
-            if not api.get("observed", False) and not api.get("processed", False):
-                return f"scan_api({api['api_id']})"
-
-        best_action = None
-        best_q = float("-inf")
-        for action in actions:
-            key = self._action_key(obs, action)
-            q = self.q.get(key, 0.0)
-            if q > best_q:
-                best_q = q
-                best_action = action
-        return best_action or self.rng.choice(actions)
-
-    def update(self, obs: Dict, action: str, reward: float, next_obs: Dict, next_actions: List[str]) -> None:
-        key = self._action_key(obs, action)
-        q_sa = self.q.get(key, 0.0)
-        next_max = max([self.q.get(self._action_key(next_obs, a), 0.0) for a in next_actions], default=0.0)
-        target = reward + self.gamma * next_max
-        self.q[key] = q_sa + self.alpha * (target - q_sa)
-
-    def decay(self) -> None:
-        self.epsilon = max(0.04, self.epsilon * 0.992)
-
-    def to_dict(self) -> Dict:
-        # Convert tuple keys to strings for JSON serialization.
-        serialized_q = {f"{k[0]}|{k[1]}|{k[2]}": v for k, v in self.q.items()}
-        return {
-            "epsilon": self.epsilon,
-            "alpha": self.alpha,
-            "gamma": self.gamma,
-            "q": serialized_q,
-        }
-
-    @classmethod
-    def from_dict(cls, payload: Dict, seed: int = 42) -> "EpsilonGreedyPolicy":
-        obj = cls(seed=seed)
-        obj.epsilon = float(payload.get("epsilon", obj.epsilon))
-        obj.alpha = float(payload.get("alpha", obj.alpha))
-        obj.gamma = float(payload.get("gamma", obj.gamma))
-        q_payload = payload.get("q", {})
-        restored_q: Dict[Tuple[str, str, int], float] = {}
-        for raw_key, value in q_payload.items():
-            parts = str(raw_key).split("|")
-            if len(parts) != 3:
-                continue
-            state_bucket, action_type, risk_bucket = parts[0], parts[1], parts[2]
-            try:
-                restored_q[(state_bucket, action_type, int(risk_bucket))] = float(value)
-            except Exception:
-                continue
-        obj.q = restored_q
-        return obj
+# REMOVED: fallback logic — entire `EpsilonGreedyPolicy` / `epsilon_q_fallback` training path.
+# Restored on branch `backup/pre-trl-fix` for historical reproducibility.
 
 
 class TRLPPOPolicy:
-    """Optional TRL-based policy. Falls back gracefully when unavailable."""
+    """# MODIFIED: TRL PPO policy only; initialization errors propagate (no silent fallback)."""
 
-    def __init__(self, model_name: str, seed: int = 42):
-        self.available = False
-        self.error = ""
+    def __init__(self, model_name: str, seed: int = 42, load_from: str = ""):
+        import torch
+        from transformers import AutoTokenizer
 
         try:
-            import torch
-            from transformers import AutoTokenizer
-            # ADDED: optional quantization/PEFT imports for low-memory Colab training.
+            from transformers import BitsAndBytesConfig
+        except Exception:
+            BitsAndBytesConfig = None  # type: ignore[assignment]
+        use_4bit = False
+        if torch.cuda.is_available() and BitsAndBytesConfig is not None:
             try:
-                from transformers import BitsAndBytesConfig
-            except Exception:
-                BitsAndBytesConfig = None  # type: ignore[assignment]
-            try:
-                from peft import LoraConfig, get_peft_model
-            except Exception:
-                LoraConfig = None  # type: ignore[assignment]
-                get_peft_model = None  # type: ignore[assignment]
-            from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer
+                pkg_version("bitsandbytes")
+                use_4bit = True
+            except PackageNotFoundError:
+                use_4bit = False  # MODIFIED: avoid BitsAndBytesConfig when bitsandbytes is not installed
+        try:
+            from peft import LoraConfig, get_peft_model
+        except Exception:
+            LoraConfig = None  # type: ignore[assignment]
+            get_peft_model = None  # type: ignore[assignment]
+        AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer = _import_legacy_trl_ppo()
 
-            self.torch = torch
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.torch = torch
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
-            # MODIFIED: use 4-bit quantization on CUDA when available to fit Colab RAM/VRAM.
-            model_kwargs: Dict = {}
-            if torch.cuda.is_available() and BitsAndBytesConfig is not None:
-                bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16,
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_quant_type="nf4",
-                )
-                model_kwargs = {
-                    "quantization_config": bnb_config,
-                    "device_map": "auto",
-                }
-
-            self.model = AutoModelForCausalLMWithValueHead.from_pretrained(model_name, **model_kwargs)
-            self.ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(model_name, **model_kwargs)
-
-            # ADDED: apply LoRA to reduce trainable parameter memory footprint when PEFT is available.
-            if LoraConfig is not None and get_peft_model is not None:
-                lora_config = LoraConfig(
-                    r=8,
-                    lora_alpha=16,
-                    target_modules=["q_proj", "v_proj"],
-                    lora_dropout=0.05,
-                    bias="none",
-                    task_type="CAUSAL_LM",
-                )
-                # TRL value-head wrapper exposes the base model at `pretrained_model`.
-                self.model.pretrained_model = get_peft_model(self.model.pretrained_model, lora_config)
-
-            # ADDED: gradient checkpointing for lower activation memory.
-            try:
-                self.model.pretrained_model.gradient_checkpointing_enable()
-            except Exception:
-                try:
-                    self.model.gradient_checkpointing_enable()
-                except Exception:
-                    pass
-
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            self.model.to(self.device)
-            self.ref_model.to(self.device)
-
-            # MODIFIED: keep internal PPO micro-batch fixed at 1 for Colab stability.
-            batch_size = 1
-            cfg = PPOConfig(
-                model_name=model_name,
-                learning_rate=1e-5,
-                batch_size=batch_size,
-                mini_batch_size=batch_size,
-                seed=seed,
+        model_kwargs: Dict = {}
+        if use_4bit:
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
             )
-            try:
-                self.ppo = PPOTrainer(config=cfg, model=self.model, ref_model=self.ref_model, tokenizer=self.tokenizer)
-            except TypeError:
-                self.ppo = PPOTrainer(cfg, self.model, self.ref_model, self.tokenizer)
+            model_kwargs = {
+                "quantization_config": bnb_config,
+                "device_map": "auto",
+            }
 
-            self.available = True
-        except Exception as exc:
-            self.error = str(exc)
-            self.available = False
+        load_path = load_from.strip()
+        if load_path and Path(load_path).is_dir():
+            self.model = AutoModelForCausalLMWithValueHead.from_pretrained(load_path, **model_kwargs)
+        else:
+            self.model = AutoModelForCausalLMWithValueHead.from_pretrained(model_name, **model_kwargs)
+
+        self.ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(model_name, **model_kwargs)
+
+        if LoraConfig is not None and get_peft_model is not None:
+            lora_config = LoraConfig(
+                r=8,
+                lora_alpha=16,
+                target_modules=["q_proj", "v_proj"],
+                lora_dropout=0.05,
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
+            self.model.pretrained_model = get_peft_model(self.model.pretrained_model, lora_config)
+
+        try:
+            self.model.pretrained_model.gradient_checkpointing_enable()
+        except Exception:
+            try:
+                self.model.gradient_checkpointing_enable()
+            except Exception:
+                pass
+
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model.to(self.device)
+        self.ref_model.to(self.device)
+
+        batch_size = 1
+        ppo_cfg_kwargs = dict(
+            model_name=model_name,
+            learning_rate=1e-5,
+            batch_size=batch_size,
+            mini_batch_size=batch_size,
+            seed=seed,
+        )
+        # ADDED: PPO micro-batching / accumulation per RLHF recipe (compatible TRL versions only).
+        try:
+            cfg = PPOConfig(**ppo_cfg_kwargs, gradient_accumulation_steps=4)
+        except TypeError:
+            cfg = PPOConfig(**ppo_cfg_kwargs)
+
+        try:
+            self.ppo = PPOTrainer(config=cfg, model=self.model, ref_model=self.ref_model, tokenizer=self.tokenizer)
+        except TypeError:
+            self.ppo = PPOTrainer(cfg, self.model, self.ref_model, self.tokenizer)
 
     def act(self, obs: Dict, actions: List[str], deterministic: bool = False) -> Tuple[str, Dict]:
-        if not self.available:
-            raise RuntimeError("TRL policy unavailable")
-
         prompt = build_prompt(obs, actions)
         # MODIFIED: cap prompt tokenization length for Colab memory stability.
         query = self.tokenizer(
@@ -405,13 +330,9 @@ class TRLPPOPolicy:
         return action, {"query": query[0], "response": response_ids[0]}
 
     def update(self, memory: Dict, reward: float) -> None:
-        if not self.available:
-            return
-        try:
-            reward_tensor = self.torch.tensor(reward, dtype=self.torch.float32).to(self.device)
-            self.ppo.step([memory["query"]], [memory["response"]], [reward_tensor])
-        except Exception:
-            pass
+        # MODIFIED: surface PPO errors instead of swallowing them.
+        reward_tensor = self.torch.tensor(reward, dtype=self.torch.float32).to(self.device)
+        self.ppo.step([memory["query"]], [memory["response"]], [reward_tensor])
 
     @staticmethod
     def _pick_valid_action(raw: str, actions: List[str]) -> str:
@@ -427,8 +348,6 @@ class TRLPPOPolicy:
 def _select_action(policy, obs: Dict, actions: List[str], deterministic: bool) -> Tuple[str, Dict]:
     if isinstance(policy, TRLPPOPolicy):
         return policy.act(obs, actions, deterministic=deterministic)
-    if isinstance(policy, EpsilonGreedyPolicy):
-        return policy.act(obs, actions, deterministic=deterministic), {}
     return policy.act(obs, actions), {}
 
 
@@ -490,19 +409,27 @@ def selection_score(stats: Dict[str, float]) -> float:
 def train(args: argparse.Namespace) -> Dict:
     set_global_seed(args.seed)
 
+    if not args.prefer_trl:
+        raise SystemExit(
+            "FATAL: --no-prefer-trl is REMOVED with epsilon_q_fallback. "
+            "This script runs TRL PPO only. Use branch backup/pre-trl-fix for the old Q-table path."
+        )
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     env_kwargs = {"min_apis": args.min_apis, "max_apis": args.max_apis}
     env = ZombieShieldEnv(**env_kwargs, seed=args.seed)
 
-    trl_policy = TRLPPOPolicy(model_name=args.model_name, seed=args.seed)
-    fallback_policy = EpsilonGreedyPolicy(seed=args.seed)
-    if args.load_checkpoint:
-        ckpt_payload = json.loads(Path(args.load_checkpoint).read_text(encoding="utf-8"))
-        fallback_policy = EpsilonGreedyPolicy.from_dict(ckpt_payload, seed=args.seed)
-    use_trl = args.prefer_trl and trl_policy.available
-    policy = trl_policy if use_trl else fallback_policy
+    load_ckpt = str(Path(args.load_checkpoint).resolve()) if args.load_checkpoint else ""
+    if load_ckpt and Path(load_ckpt).suffix.lower() == ".json":
+        raise SystemExit(
+            "FATAL: Q-table JSON checkpoints were REMOVED with epsilon_q_fallback. "
+            "Omit --load-checkpoint or pass a Hugging Face model directory."
+        )
+
+    trl_policy = TRLPPOPolicy(model_name=args.model_name, seed=args.seed, load_from=load_ckpt)
+    policy = trl_policy
 
     # Baseline and pre-training evaluation (judge-facing evidence).
     random_policy = RandomPolicy(seed=args.seed + 11)
@@ -513,8 +440,6 @@ def train(args: argparse.Namespace) -> Dict:
     # Untrained baseline: random action policy before any learning.
     pretrain_eval = evaluate_policy(RandomPolicy(args.seed + 313), args.eval_episodes, env_kwargs, seed_base=args.seed + 900)
 
-    best_snapshot_q = copy.deepcopy(fallback_policy.q)
-    best_snapshot_eps = fallback_policy.epsilon
     best_snapshot_score = selection_score(pretrain_eval)
 
     rewards: List[float] = []
@@ -538,31 +463,29 @@ def train(args: argparse.Namespace) -> Dict:
 
             action, memory = _select_action(policy, obs, actions, deterministic=False)
             next_obs, reward, done, info = env.step(action)
-
-            if use_trl:
-                trl_policy.update(memory, reward)
-            else:
-                next_actions = candidate_actions(next_obs)
-                fallback_policy.update(obs, action, reward, next_obs, next_actions)
+            ppo_reward = _shape_ppo_reward(reward, done, info)
+            if memory:
+                trl_policy.update(memory, ppo_reward)
 
             episode_reward += reward
             obs = next_obs
             last_info = info
 
-        if not use_trl:
-            fallback_policy.decay()
-            if episode % args.selection_interval == 0:
-                selection_eval = evaluate_policy(
-                    fallback_policy,
-                    episodes=args.selection_eval_episodes,
-                    env_kwargs=env_kwargs,
-                    seed_base=args.seed + 2000 + episode,
-                )
-                candidate_score = selection_score(selection_eval)
-                if candidate_score > best_snapshot_score:
-                    best_snapshot_score = candidate_score
-                    best_snapshot_q = copy.deepcopy(fallback_policy.q)
-                    best_snapshot_eps = fallback_policy.epsilon
+        if episode % args.selection_interval == 0:
+            selection_eval = evaluate_policy(
+                trl_policy,
+                episodes=args.selection_eval_episodes,
+                env_kwargs=env_kwargs,
+                seed_base=args.seed + 2000 + episode,
+            )
+            candidate_score = selection_score(selection_eval)
+            if candidate_score > best_snapshot_score:
+                best_snapshot_score = candidate_score
+                try:
+                    trl_policy.model.save_pretrained(output_dir / "best_trl_model")
+                    trl_policy.tokenizer.save_pretrained(output_dir / "best_trl_model")
+                except Exception:
+                    pass
 
         rewards.append(episode_reward)
         accuracies.append(float(last_info.get("terminal_accuracy", 0.0)))
@@ -575,12 +498,8 @@ def train(args: argparse.Namespace) -> Dict:
         if episode % args.log_every == 0:
             print(
                 f"episode={episode} reward={episode_reward:.2f} accuracy={accuracies[-1]:.3f} "
-                f"f1={f1s[-1]:.3f} vulns={vulns[-1]} mode={'trl_ppo' if use_trl else 'epsilon_q'}"
+                f"f1={f1s[-1]:.3f} vulns={vulns[-1]} mode=trl_ppo"
             )
-
-    if not use_trl:
-        fallback_policy.q = best_snapshot_q
-        fallback_policy.epsilon = best_snapshot_eps
 
     posttrain_eval = evaluate_policy(policy, args.eval_episodes, env_kwargs, seed_base=args.seed + 1100)
 
@@ -588,8 +507,8 @@ def train(args: argparse.Namespace) -> Dict:
     _save_baseline_comparison(output_dir, baseline_random, baseline_heuristic, pretrain_eval, posttrain_eval)
 
     summary = {
-        "mode": "trl_ppo" if use_trl else "epsilon_q_fallback",
-        "trl_error": trl_policy.error,
+        "mode": "trl_ppo",
+        "trl_error": "",
         "episodes": args.episodes,
         "train_mean_reward": sum(rewards) / max(1, len(rewards)),
         "train_mean_accuracy": sum(accuracies) / max(1, len(accuracies)),
@@ -616,17 +535,12 @@ def train(args: argparse.Namespace) -> Dict:
     }
 
     (output_dir / "training_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    if not use_trl:
-        (output_dir / "policy_checkpoint.json").write_text(
-            json.dumps(fallback_policy.to_dict(), indent=2), encoding="utf-8"
-        )
-    else:
-        # Save model/tokenizer for immediate post-training inference reuse.
-        try:
-            trl_policy.model.save_pretrained(output_dir / "trained_model")
-            trl_policy.tokenizer.save_pretrained(output_dir / "trained_model")
-        except Exception:
-            pass
+    # Save model/tokenizer for immediate post-training inference reuse.
+    try:
+        trl_policy.model.save_pretrained(output_dir / "trained_model")
+        trl_policy.tokenizer.save_pretrained(output_dir / "trained_model")
+    except Exception:
+        pass
     print(json.dumps(summary, indent=2))
     return summary
 
@@ -755,4 +669,3 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
     train(args)
-    
