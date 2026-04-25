@@ -7,6 +7,10 @@ Also produces baseline-vs-trained comparisons required by hackathon judging.
 
 from __future__ import annotations
 
+# ADDED: disable TensorFlow usage to reduce Colab RAM overhead.
+import os
+os.environ["USE_TF"] = "0"
+
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
@@ -291,6 +295,16 @@ class TRLPPOPolicy:
         try:
             import torch
             from transformers import AutoTokenizer
+            # ADDED: optional quantization/PEFT imports for low-memory Colab training.
+            try:
+                from transformers import BitsAndBytesConfig
+            except Exception:
+                BitsAndBytesConfig = None  # type: ignore[assignment]
+            try:
+                from peft import LoraConfig, get_peft_model
+            except Exception:
+                LoraConfig = None  # type: ignore[assignment]
+                get_peft_model = None  # type: ignore[assignment]
             from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer
 
             self.torch = torch
@@ -298,13 +312,58 @@ class TRLPPOPolicy:
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
 
-            self.model = AutoModelForCausalLMWithValueHead.from_pretrained(model_name)
-            self.ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(model_name)
+            # MODIFIED: use 4-bit quantization on CUDA when available to fit Colab RAM/VRAM.
+            model_kwargs: Dict = {}
+            if torch.cuda.is_available() and BitsAndBytesConfig is not None:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                )
+                model_kwargs = {
+                    "quantization_config": bnb_config,
+                    "device_map": "auto",
+                }
+
+            self.model = AutoModelForCausalLMWithValueHead.from_pretrained(model_name, **model_kwargs)
+            self.ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(model_name, **model_kwargs)
+
+            # ADDED: apply LoRA to reduce trainable parameter memory footprint when PEFT is available.
+            if LoraConfig is not None and get_peft_model is not None:
+                lora_config = LoraConfig(
+                    r=8,
+                    lora_alpha=16,
+                    target_modules=["q_proj", "v_proj"],
+                    lora_dropout=0.05,
+                    bias="none",
+                    task_type="CAUSAL_LM",
+                )
+                # TRL value-head wrapper exposes the base model at `pretrained_model`.
+                self.model.pretrained_model = get_peft_model(self.model.pretrained_model, lora_config)
+
+            # ADDED: gradient checkpointing for lower activation memory.
+            try:
+                self.model.pretrained_model.gradient_checkpointing_enable()
+            except Exception:
+                try:
+                    self.model.gradient_checkpointing_enable()
+                except Exception:
+                    pass
+
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
             self.model.to(self.device)
             self.ref_model.to(self.device)
 
-            cfg = PPOConfig(model_name=model_name, learning_rate=1e-5, batch_size=1, mini_batch_size=1, seed=seed)
+            # MODIFIED: keep internal PPO micro-batch fixed at 1 for Colab stability.
+            batch_size = 1
+            cfg = PPOConfig(
+                model_name=model_name,
+                learning_rate=1e-5,
+                batch_size=batch_size,
+                mini_batch_size=batch_size,
+                seed=seed,
+            )
             try:
                 self.ppo = PPOTrainer(config=cfg, model=self.model, ref_model=self.ref_model, tokenizer=self.tokenizer)
             except TypeError:
@@ -320,7 +379,13 @@ class TRLPPOPolicy:
             raise RuntimeError("TRL policy unavailable")
 
         prompt = build_prompt(obs, actions)
-        query = self.tokenizer(prompt, return_tensors="pt").input_ids.to(self.device)
+        # MODIFIED: cap prompt tokenization length for Colab memory stability.
+        query = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=256,
+        ).input_ids.to(self.device)
 
         with self.torch.no_grad():
             generated = self.model.generate(
@@ -690,3 +755,4 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
     train(args)
+    
