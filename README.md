@@ -99,8 +99,8 @@ Script: `training/train_trl.py`
 Note: latest `trl` versions changed APIs. For hackathon Colab reruns, use `requirements-colab.txt` (pins `trl==0.8.6` for PPOTrainer compatibility).
 
 - Preferred: Hugging Face TRL PPO with TinyLlama
-- Fallback: epsilon-greedy Q-learning (keeps prototype runnable when TRL is unavailable)
 - Training loop interacts with environment directly (not static data)
+- Difficulty benchmark includes deterministic `easy`, `medium`, `hard` task grading (0.0-1.0)
 
 The script outputs:
 - reward/accuracy/vulnerability curves
@@ -186,22 +186,19 @@ Expected:
 ```bash
 python training/train_trl.py --episodes 80 --eval-episodes 12 --output-dir training_outputs
 ```
-For CPU-only fallback run:
-```bash
-python training/train_trl.py --episodes 80 --eval-episodes 12 --no-prefer-trl --output-dir training_outputs
-```
-To resume a saved fallback policy checkpoint:
-```bash
-python training/train_trl.py --episodes 40 --no-prefer-trl --load-checkpoint training_outputs/policy_checkpoint.json --output-dir training_outputs_resume
-```
 To run GRPO/RLVR training:
 ```bash
 python training/train_grpo_rlvr.py --dataset-samples 256 --epochs 1 --output-dir training_outputs_grpo
+```
+To run explicit easy/medium/hard comparison after training:
+```bash
+python training/evaluate_tasks.py --model-name Qwen/Qwen2.5-3B-Instruct --trained-model-dir training_outputs/trained_model --episodes 12 --output training_outputs/task_benchmark_summary.json
 ```
 
 Expected logs every few episodes:
 - `episode=... reward=... accuracy=...`
 - final JSON summary including `agent_pretrain`, `agent_posttrain`, and `improvement`.
+- per-difficulty metrics in `difficulty_eval` with deterministic task scores.
 
 ### 4) Verify learning
 Look in `training_outputs/training_summary.json`:

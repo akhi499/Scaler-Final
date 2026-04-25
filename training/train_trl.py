@@ -29,6 +29,13 @@ if str(ROOT_DIR) not in sys.path:
 from env.zombieshield_env import ZombieShieldEnv
 
 
+TASK_CONFIGS = {
+    "easy": {"min_apis": 10, "max_apis": 14, "max_actions_per_api": 8},
+    "medium": {"min_apis": 18, "max_apis": 28, "max_actions_per_api": 10},
+    "hard": {"min_apis": 32, "max_apis": 50, "max_actions_per_api": 12},
+}
+
+
 def set_global_seed(seed: int) -> None:
     random.seed(seed)
     try:
@@ -351,6 +358,37 @@ def _select_action(policy, obs: Dict, actions: List[str], deterministic: bool) -
     return policy.act(obs, actions), {}
 
 
+def grade_episode(last_info: Dict) -> float:
+    """Deterministic task grader score in [0, 1]."""
+    accuracy = float(last_info.get("terminal_accuracy", 0.0))
+    precision = float(last_info.get("terminal_precision", 0.0))
+    recall = float(last_info.get("terminal_recall", 0.0))
+    f1 = float(last_info.get("terminal_f1", 0.0))
+    labeled_fraction = float(last_info.get("terminal_labeled_fraction", 0.0))
+    blocked_active = int(last_info.get("episode_stats", {}).get("blocked_active", 0))
+    blocked_zombies = int(last_info.get("episode_stats", {}).get("blocked_zombies", 0))
+    fp = int(last_info.get("terminal_fp", 0))
+    fn = int(last_info.get("terminal_fn", 0))
+
+    # Weighted quality core.
+    score = (
+        0.20 * accuracy
+        + 0.15 * precision
+        + 0.30 * recall
+        + 0.25 * f1
+        + 0.10 * labeled_fraction
+    )
+
+    # Deterministic penalties for harmful decisions.
+    score -= min(0.20, 0.03 * blocked_active)
+    score -= min(0.25, 0.02 * fp + 0.03 * fn)
+
+    # Small bonus for successful mitigations.
+    score += min(0.10, 0.01 * blocked_zombies)
+
+    return max(0.0, min(1.0, round(score, 4)))
+
+
 def evaluate_policy(policy, episodes: int, env_kwargs: Dict, seed_base: int, deterministic: bool = True) -> Dict[str, float]:
     rewards: List[float] = []
     accuracies: List[float] = []
@@ -359,6 +397,7 @@ def evaluate_policy(policy, episodes: int, env_kwargs: Dict, seed_base: int, det
     recall_scores: List[float] = []
     f1_scores: List[float] = []
     labeled_fraction_scores: List[float] = []
+    task_scores: List[float] = []
 
     for i in range(episodes):
         env = ZombieShieldEnv(**env_kwargs, seed=seed_base + i)
@@ -383,6 +422,7 @@ def evaluate_policy(policy, episodes: int, env_kwargs: Dict, seed_base: int, det
         recall_scores.append(float(last_info.get("terminal_recall", 0.0)))
         f1_scores.append(float(last_info.get("terminal_f1", 0.0)))
         labeled_fraction_scores.append(float(last_info.get("terminal_labeled_fraction", 0.0)))
+        task_scores.append(grade_episode(last_info))
 
     return {
         "mean_reward": sum(rewards) / max(1, len(rewards)),
@@ -392,6 +432,7 @@ def evaluate_policy(policy, episodes: int, env_kwargs: Dict, seed_base: int, det
         "mean_recall": sum(recall_scores) / max(1, len(recall_scores)),
         "mean_f1": sum(f1_scores) / max(1, len(f1_scores)),
         "mean_labeled_fraction": sum(labeled_fraction_scores) / max(1, len(labeled_fraction_scores)),
+        "mean_task_score": sum(task_scores) / max(1, len(task_scores)),
     }
 
 
@@ -403,7 +444,31 @@ def selection_score(stats: Dict[str, float]) -> float:
         + 25.0 * stats["mean_recall"]
         + 12.0 * stats["mean_labeled_fraction"]
         + 6.0 * stats["mean_accuracy"]
+        + 8.0 * stats.get("mean_task_score", 0.0)
     )
+
+
+def evaluate_across_tasks(
+    policy,
+    episodes: int,
+    seed_base: int,
+    deterministic: bool = True,
+) -> Dict[str, Dict[str, float]]:
+    results: Dict[str, Dict[str, float]] = {}
+    for idx, (task_name, cfg) in enumerate(TASK_CONFIGS.items()):
+        env_kwargs = {
+            "min_apis": cfg["min_apis"],
+            "max_apis": cfg["max_apis"],
+            "max_actions_per_api": cfg["max_actions_per_api"],
+        }
+        results[task_name] = evaluate_policy(
+            policy,
+            episodes=episodes,
+            env_kwargs=env_kwargs,
+            seed_base=seed_base + idx * 1000,
+            deterministic=deterministic,
+        )
+    return results
 
 
 def train(args: argparse.Namespace) -> Dict:
@@ -439,6 +504,15 @@ def train(args: argparse.Namespace) -> Dict:
     baseline_heuristic = evaluate_policy(heuristic_policy, args.eval_episodes, env_kwargs, seed_base=args.seed + 700)
     # Untrained baseline: random action policy before any learning.
     pretrain_eval = evaluate_policy(RandomPolicy(args.seed + 313), args.eval_episodes, env_kwargs, seed_base=args.seed + 900)
+    baseline_random_tasks = evaluate_across_tasks(
+        random_policy, episodes=args.task_eval_episodes, seed_base=args.seed + 3500, deterministic=True
+    )
+    baseline_heuristic_tasks = evaluate_across_tasks(
+        heuristic_policy, episodes=args.task_eval_episodes, seed_base=args.seed + 4500, deterministic=True
+    )
+    pretrain_tasks = evaluate_across_tasks(
+        RandomPolicy(args.seed + 313), episodes=args.task_eval_episodes, seed_base=args.seed + 5500, deterministic=True
+    )
 
     best_snapshot_score = selection_score(pretrain_eval)
 
@@ -449,6 +523,7 @@ def train(args: argparse.Namespace) -> Dict:
     recalls: List[float] = []
     f1s: List[float] = []
     labeled_fractions: List[float] = []
+    train_task_scores: List[float] = []
 
     for episode in range(1, args.episodes + 1):
         obs = env.reset()
@@ -494,6 +569,7 @@ def train(args: argparse.Namespace) -> Dict:
         recalls.append(float(last_info.get("terminal_recall", 0.0)))
         f1s.append(float(last_info.get("terminal_f1", 0.0)))
         labeled_fractions.append(float(last_info.get("terminal_labeled_fraction", 0.0)))
+        train_task_scores.append(grade_episode(last_info))
 
         if episode % args.log_every == 0:
             print(
@@ -502,9 +578,19 @@ def train(args: argparse.Namespace) -> Dict:
             )
 
     posttrain_eval = evaluate_policy(policy, args.eval_episodes, env_kwargs, seed_base=args.seed + 1100)
+    posttrain_tasks = evaluate_across_tasks(
+        policy, episodes=args.task_eval_episodes, seed_base=args.seed + 6500, deterministic=True
+    )
 
     _save_curves(output_dir, rewards, accuracies, vulns, precisions, recalls, f1s, labeled_fractions)
     _save_baseline_comparison(output_dir, baseline_random, baseline_heuristic, pretrain_eval, posttrain_eval)
+    _save_task_difficulty_comparison(
+        output_dir,
+        baseline_random_tasks,
+        baseline_heuristic_tasks,
+        pretrain_tasks,
+        posttrain_tasks,
+    )
 
     summary = {
         "mode": "trl_ppo",
@@ -517,10 +603,17 @@ def train(args: argparse.Namespace) -> Dict:
         "train_mean_recall": sum(recalls) / max(1, len(recalls)),
         "train_mean_f1": sum(f1s) / max(1, len(f1s)),
         "train_mean_labeled_fraction": sum(labeled_fractions) / max(1, len(labeled_fractions)),
+        "train_mean_task_score": sum(train_task_scores) / max(1, len(train_task_scores)),
         "baseline_random": baseline_random,
         "baseline_heuristic": baseline_heuristic,
         "agent_pretrain": pretrain_eval,
         "agent_posttrain": posttrain_eval,
+        "difficulty_eval": {
+            "random": baseline_random_tasks,
+            "heuristic": baseline_heuristic_tasks,
+            "pretrain": pretrain_tasks,
+            "posttrain": posttrain_tasks,
+        },
         "selection_score_pretrain": selection_score(pretrain_eval),
         "selection_score_posttrain": selection_score(posttrain_eval),
         "improvement": {
@@ -531,10 +624,14 @@ def train(args: argparse.Namespace) -> Dict:
             "f1_delta": posttrain_eval["mean_f1"] - pretrain_eval["mean_f1"],
             "vulnerability_delta": posttrain_eval["mean_vulnerabilities"] - pretrain_eval["mean_vulnerabilities"],
             "labeled_fraction_delta": posttrain_eval["mean_labeled_fraction"] - pretrain_eval["mean_labeled_fraction"],
+            "task_score_delta": posttrain_eval["mean_task_score"] - pretrain_eval["mean_task_score"],
         },
     }
 
     (output_dir / "training_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    (output_dir / "difficulty_comparison.json").write_text(
+        json.dumps(summary["difficulty_eval"], indent=2), encoding="utf-8"
+    )
     # Save model/tokenizer for immediate post-training inference reuse.
     try:
         trl_policy.model.save_pretrained(output_dir / "trained_model")
@@ -647,6 +744,38 @@ def _save_baseline_comparison(
     plt.close(fig)
 
 
+def _save_task_difficulty_comparison(
+    output_dir: Path,
+    random_tasks: Dict[str, Dict[str, float]],
+    heuristic_tasks: Dict[str, Dict[str, float]],
+    pretrain_tasks: Dict[str, Dict[str, float]],
+    posttrain_tasks: Dict[str, Dict[str, float]],
+) -> None:
+    difficulties = list(TASK_CONFIGS.keys())
+    random_scores = [random_tasks[d]["mean_task_score"] for d in difficulties]
+    heuristic_scores = [heuristic_tasks[d]["mean_task_score"] for d in difficulties]
+    pre_scores = [pretrain_tasks[d]["mean_task_score"] for d in difficulties]
+    post_scores = [posttrain_tasks[d]["mean_task_score"] for d in difficulties]
+
+    x = list(range(len(difficulties)))
+    width = 0.2
+
+    plt.figure(figsize=(10, 5))
+    plt.bar([i - 1.5 * width for i in x], random_scores, width=width, label="Random", color="#bdbdbd")
+    plt.bar([i - 0.5 * width for i in x], heuristic_scores, width=width, label="Heuristic", color="#6baed6")
+    plt.bar([i + 0.5 * width for i in x], pre_scores, width=width, label="Pretrain", color="#fdae6b")
+    plt.bar([i + 1.5 * width for i in x], post_scores, width=width, label="Posttrain", color="#31a354")
+    plt.xticks(x, [d.title() for d in difficulties])
+    plt.ylim(0, 1)
+    plt.ylabel("Task Score (0-1)")
+    plt.title("Difficulty Benchmark: Easy vs Medium vs Hard")
+    plt.grid(axis="y", alpha=0.2)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(output_dir / "difficulty_task_score_comparison.png", dpi=140)
+    plt.close()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train an agent in ZombieShieldEnv")
     parser.add_argument("--episodes", type=int, default=80)
@@ -658,6 +787,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-name", type=str, default="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
     parser.add_argument("--selection-interval", type=int, default=5)
     parser.add_argument("--selection-eval-episodes", type=int, default=4)
+    parser.add_argument("--task-eval-episodes", type=int, default=10)
     parser.add_argument("--prefer-trl", dest="prefer_trl", action="store_true")
     parser.add_argument("--no-prefer-trl", dest="prefer_trl", action="store_false")
     parser.set_defaults(prefer_trl=True)
