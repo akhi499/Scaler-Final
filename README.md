@@ -322,6 +322,11 @@ Baseline reference from `training_outputs/baseline_results.json`:
 ## Reinforcement Learning & Evaluation
 We trained a custom PPO policy on top of `Qwen/Qwen2.5-3B-Instruct` to improve step-wise zombie API detection, mitigation quality, and false-positive control in a partially observable security environment. The training loop optimizes actions such as scanning, classification, security testing, and blocking with dense reward signals tied to real operational outcomes. To make this practical on constrained hardware, we used PEFT/LoRA and trained adapter weights on a single L4 GPU, then exported the best adapter checkpoint for efficient deployment and inference in Hugging Face Spaces.
 
+### Key Evaluation Charts
+![Reward Curve (Local)](training_outputs/reward_curve.png)
+![Baseline Comparison (Local)](training_outputs/baseline_comparison.png)
+![Difficulty Task Score Comparison (Local)](training_outputs/difficulty_task_score_comparison.png)
+
 ![Reward Curve](https://huggingface.co/akhi499/Zombie-API-Qwen-3B/resolve/main/reward_curve.png)
 ![Baseline Comparison](https://huggingface.co/akhi499/Zombie-API-Qwen-3B/resolve/main/baseline_comparison.png)
 ![Difficulty Task Score Comparison](https://huggingface.co/akhi499/Zombie-API-Qwen-3B/resolve/main/difficulty_task_score_comparison.png)
