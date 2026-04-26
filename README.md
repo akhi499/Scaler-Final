@@ -324,12 +324,8 @@ We trained a custom PPO policy on top of `Qwen/Qwen2.5-3B-Instruct` to improve s
 
 ### Key Evaluation Charts
 ![Reward Curve (Local)](training_outputs/reward_curve.png)
-![Baseline Comparison (Local)](training_outputs/baseline_comparison.png)
-![Difficulty Task Score Comparison (Local)](training_outputs/difficulty_task_score_comparison.png)
-
-![Reward Curve](https://huggingface.co/akhi499/Zombie-API-Qwen-3B/resolve/main/reward_curve.png)
-![Baseline Comparison](https://huggingface.co/akhi499/Zombie-API-Qwen-3B/resolve/main/baseline_comparison.png)
-![Difficulty Task Score Comparison](https://huggingface.co/akhi499/Zombie-API-Qwen-3B/resolve/main/difficulty_task_score_comparison.png)
+![Baseline Comparison (Qwen Run)](training_outputs_qwen/baseline_comparison.png)
+![Difficulty Task Score Comparison (Qwen Run)](training_outputs_qwen/difficulty_task_score_comparison.png)
 
 ## Submission Status
 Current recommendation: **Ready to submit** after you re-run training on the PPO-only script and refresh `training_outputs/*` if needed.
