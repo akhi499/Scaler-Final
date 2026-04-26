@@ -326,6 +326,10 @@ We trained a custom PPO policy on top of `Qwen/Qwen2.5-3B-Instruct` to improve s
 ![Reward Curve (Local)](training_outputs/reward_curve.png)
 ![Baseline Comparison (Qwen Run)](training_outputs_qwen/baseline_comparison.png)
 ![Difficulty Task Score Comparison (Qwen Run)](training_outputs_qwen/difficulty_task_score_comparison.png)
+![Accuracy Curve](training_outputs/accuracy_curve.png)
+![Classification Metrics Curve](training_outputs/classification_metrics_curve.png)
+![Vulnerabilities Curve](training_outputs/vulnerabilities_curve.png)
+![Baseline Comparison (Legacy Run)](training_outputs/baseline_comparison.png)
 
 ## Submission Status
 Current recommendation: **Ready to submit** after you re-run training on the PPO-only script and refresh `training_outputs/*` if needed.
