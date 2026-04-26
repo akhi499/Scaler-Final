@@ -15,8 +15,6 @@ ZombieShieldEnv is an OpenEnv-compatible environment for training LLM agents to 
 ## Submission Links (Judges)
 - Hugging Face Space: https://huggingface.co/spaces/akhi499/Zombie-API
 - Mini-blog (draft markdown in repo): `BLOG_SUBMISSION.md`
-- <2 min demo video (YouTube): TODO_ADD_LINK
-- Slides (optional): TODO_ADD_LINK
 
 ## Direct Evidence Links (UI-Independent)
 If the Space UI cache is stale, use these direct artifact links in the Files tab:
@@ -320,6 +318,13 @@ Baseline reference from `training_outputs/baseline_results.json`:
 - Heuristic baseline mean reward: `81.44`
 - Random baseline mean F1: `0.2992`
 - Heuristic baseline mean F1: `0.6521`
+
+## Reinforcement Learning & Evaluation
+We trained a custom PPO policy on top of `Qwen/Qwen2.5-3B-Instruct` to improve step-wise zombie API detection, mitigation quality, and false-positive control in a partially observable security environment. The training loop optimizes actions such as scanning, classification, security testing, and blocking with dense reward signals tied to real operational outcomes. To make this practical on constrained hardware, we used PEFT/LoRA and trained adapter weights on a single L4 GPU, then exported the best adapter checkpoint for efficient deployment and inference in Hugging Face Spaces.
+
+![Reward Curve](https://huggingface.co/akhi499/Zombie-API-Qwen-3B/resolve/main/reward_curve.png)
+![Baseline Comparison](https://huggingface.co/akhi499/Zombie-API-Qwen-3B/resolve/main/baseline_comparison.png)
+![Difficulty Task Score Comparison](https://huggingface.co/akhi499/Zombie-API-Qwen-3B/resolve/main/difficulty_task_score_comparison.png)
 
 ## Submission Status
 Current recommendation: **Ready to submit** after you re-run training on the PPO-only script and refresh `training_outputs/*` if needed.

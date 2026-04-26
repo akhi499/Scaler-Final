@@ -7,7 +7,7 @@ from pathlib import Path
 import json
 import random
 import sys
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import gradio as gr
 import matplotlib.pyplot as plt
@@ -17,6 +17,12 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from env.zombieshield_env import ZombieShieldEnv
+
+
+CUSTOM_BASE_MODEL = "Qwen/Qwen2.5-3B-Instruct"
+CUSTOM_ADAPTER_REPO = "akhi499/Zombie-API-Qwen-3B"
+CUSTOM_ADAPTER_SUBFOLDER = "best_trl_model"
+_CUSTOM_AGENT: Optional["CustomPPOAgent"] = None
 
 
 @dataclass
@@ -184,6 +190,106 @@ class HeuristicAgent:
         return f"ignore_api({api_id})"
 
 
+class CustomPPOAgent:
+    """Inference agent that loads Qwen base model + LoRA adapter from Hugging Face."""
+
+    def __init__(
+        self,
+        base_model: str = CUSTOM_BASE_MODEL,
+        adapter_repo: str = CUSTOM_ADAPTER_REPO,
+        adapter_subfolder: str = CUSTOM_ADAPTER_SUBFOLDER,
+    ):
+        import torch
+        from peft import PeftModel
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        self.torch = torch
+        self.tokenizer = AutoTokenizer.from_pretrained(base_model)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        if torch.cuda.is_available():
+            base = AutoModelForCausalLM.from_pretrained(
+                base_model,
+                torch_dtype=torch_dtype,
+                device_map="auto",
+            )
+            model = PeftModel.from_pretrained(base, adapter_repo, subfolder=adapter_subfolder)
+            self.device = "cuda"
+        else:
+            base = AutoModelForCausalLM.from_pretrained(base_model, torch_dtype=torch_dtype)
+            model = PeftModel.from_pretrained(base, adapter_repo, subfolder=adapter_subfolder)
+            self.device = "cpu"
+            model.to(self.device)
+
+        self.model = model.eval()
+
+    @staticmethod
+    def _pick_valid_action(raw: str, actions: List[str]) -> str:
+        cleaned = raw.strip()
+        if cleaned in actions:
+            return cleaned
+        for act in actions:
+            if cleaned.startswith(act.split("(", 1)[0]):
+                return act
+        return random.choice(actions)
+
+    def choose_action(self, obs: Dict) -> str:
+        actions = candidate_actions(obs)
+        if not actions:
+            return "scan_api(api_0)"
+
+        api_lines = []
+        for api in obs.get("apis", [])[:12]:
+            api_lines.append(
+                f"- {api['api_id']} endpoint={api.get('endpoint')} version={api.get('version')} "
+                f"auth={api.get('authentication_type')} traffic={api.get('traffic_frequency')} "
+                f"updated={api.get('last_updated')}"
+            )
+
+        action_list = "\n".join([f"* {a}" for a in actions[:30]])
+        prompt = (
+            "You are a zombie API defense agent. Pick exactly one action string from ACTIONS.\n"
+            "Goal: detect zombie APIs, avoid false positives, and mitigate correctly.\n"
+            f"STEP={obs.get('step')} REMAINING={obs.get('steps_remaining')}\n"
+            "VISIBLE_APIS:\n" + "\n".join(api_lines) + "\n"
+            f"ACTIONS:\n{action_list}\n"
+            "Answer with one action only:"
+        )
+
+        toks = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=384,
+            return_attention_mask=True,
+        )
+        input_ids = toks.input_ids.to(self.device)
+        attention_mask = toks.attention_mask.to(self.device)
+
+        with self.torch.no_grad():
+            generated = self.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=24,
+                do_sample=False,
+                pad_token_id=self.tokenizer.eos_token_id,
+            )
+
+        response_ids = generated[:, input_ids.shape[1]:]
+        decoded = self.tokenizer.decode(response_ids[0], skip_special_tokens=True).strip().splitlines()
+        raw_action = decoded[0] if decoded else ""
+        return self._pick_valid_action(raw_action, actions)
+
+
+def _get_custom_agent() -> CustomPPOAgent:
+    global _CUSTOM_AGENT
+    if _CUSTOM_AGENT is None:
+        _CUSTOM_AGENT = CustomPPOAgent()
+    return _CUSTOM_AGENT
+
+
 def init_demo(seed: int = 42) -> DemoState:
     env = ZombieShieldEnv(min_apis=10, max_apis=20, seed=seed)
     obs = env.reset()
@@ -191,6 +297,14 @@ def init_demo(seed: int = 42) -> DemoState:
 
 
 def _choose_action(obs: Dict, agent_mode: str, checkpoint_path: str, step_idx: int) -> Tuple[str, str]:
+    if agent_mode == "Custom PPO Trained Agent":
+        try:
+            agent = _get_custom_agent()
+            return agent.choose_action(obs), "Custom PPO Trained Agent"
+        except Exception as exc:
+            heuristic = HeuristicAgent(seed=42 + step_idx)
+            return heuristic.choose_action(obs), f"heuristic_fallback_custom_load_error:{type(exc).__name__}"
+
     if agent_mode == "trained_checkpoint":
         ckpt = Path(checkpoint_path)
         if ckpt.exists():
@@ -345,7 +459,7 @@ def build_app() -> gr.Blocks:
         with gr.Row():
             seed = gr.Number(value=42, label="Seed", precision=0)
             agent_mode = gr.Dropdown(
-                choices=["heuristic", "trained_checkpoint"],
+                choices=["heuristic", "trained_checkpoint", "Custom PPO Trained Agent"],
                 value="heuristic",
                 label="Agent Mode",
             )
