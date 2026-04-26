@@ -6,3 +6,8 @@
 __pycache__/
 *.pyc
 
+# Keep submission chart artifacts tracked
+!training_outputs/reward_curve.png
+!training_outputs_qwen/baseline_comparison.png
+!training_outputs_qwen/difficulty_task_score_comparison.png
+
